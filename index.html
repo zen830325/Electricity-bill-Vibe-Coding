@@ -293,10 +293,10 @@
   </div>
 
   <script>
-    // ======= 已替你塞好這兩個 =======
+    // ======= 你的 Web App 設定 =======
     const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyr-CYGXoSqgq8tbXoBXjPbZTU1GpH1gWXJ1TTS9Le5SCIcyDikY3tSBymi6Lo1JZyc/exec";
     const OWNER_TOKEN = "860318";
-    // ==============================
+    // ==================================
 
     const RATE_TABLE_2M = {
       summer: [
@@ -426,9 +426,10 @@
     }
 
     async function apiPost(payload) {
+      // 不設定 Content-Type，讓瀏覽器用預設 text/plain，
+      // 避免 CORS 預檢導致 Failed to fetch
       const res = await fetch(SCRIPT_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: OWNER_TOKEN, ...payload })
       });
       const data = await res.json();
@@ -483,7 +484,7 @@
       }
 
       const latest = getLatestEntry();
-      if (!最新) {
+      if (!latest) {
         billingSummaryDiv.textContent = "目前沒有任何用電紀錄，因此無法估算本期電費。";
         return;
       }
@@ -512,7 +513,7 @@
 
       billingSummaryDiv.innerHTML =
         `本期起始抄表日：${billingConfig.periodStartDate}，起始度數：${billingConfig.periodStartReading} 度。<br>` +
-        `最新紀錄時間：${formatDateTime(latest.timestamp)}，最新讀數：${latest.read數} 度。<br>` +
+        `最新紀錄時間：${formatDateTime(latest.timestamp)}，最新讀數：${latest.reading} 度。<br>` +
         `本期累積用電：約 <b>${round(used, 2)} 度</b><br>` +
         `估算本期電費：約 <b>${round(bill, 0)} 元</b> <span class="badge">${isSummer ? "夏月" : "非夏月"}</span> ${seasonLabel}<br>` +
         `<span class="small-text">※ 此為簡化估算，只依照台電住宅累進電價計算流動電費，未含其它雜項。</span>`;
