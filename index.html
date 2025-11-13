@@ -2,7 +2,9 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8">
-  <title>用電紀錄小工具 v2.1</title>
+  <title>用電紀錄小工具（雲端版）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
   <style>
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -65,7 +67,7 @@
     }
 
     button {
-      padding: 6px 12px;
+      padding: 8px 12px;
       margin-top: 10px;
       border: none;
       border-radius: 4px;
@@ -93,11 +95,16 @@
       cursor: not-allowed;
     }
 
-    table {
+    .table-wrapper {
       width: 100%;
+      overflow-x: auto;
+      margin-top: 8px;
+    }
+
+    table {
+      min-width: 650px;
       border-collapse: collapse;
       font-size: 0.85rem;
-      margin-top: 8px;
     }
 
     th, td {
@@ -145,10 +152,41 @@
       color: #374151;
       margin-left: 4px;
     }
+
+    @media (max-width: 600px) {
+      body {
+        margin: 10px;
+      }
+
+      .row {
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      input[type="number"],
+      input[type="datetime-local"],
+      input[type="date"],
+      select,
+      textarea {
+        max-width: 100%;
+      }
+
+      button {
+        width: 100%;
+      }
+
+      .card {
+        padding: 12px 14px;
+      }
+
+      h1 {
+        font-size: 1.2rem;
+      }
+    }
   </style>
 </head>
 <body>
-  <h1>用電紀錄與每小時平均用電 v2.1</h1>
+  <h1>用電紀錄與每小時平均用電（雲端版）</h1>
 
   <!-- 新增單筆紀錄 -->
   <div class="card">
@@ -184,13 +222,13 @@
         <div id="summary" class="summary"></div>
       </div>
       <div>
-        <button class="secondary" id="export-btn">匯出資料（JSON）</button>
-        <button class="danger" id="clear-btn">清除全部紀錄</button>
+        <button class="secondary" id="export-btn">匯出目前資料（JSON）</button>
+        <button class="danger" id="clear-btn">清除全部紀錄（雲端）</button>
       </div>
     </div>
 
-    <div id="table-container">
-      <!-- 表格由 JS 產生 -->
+    <div class="table-wrapper">
+      <div id="table-container"></div>
     </div>
     <div class="small-text">
       計算方式：每小時平均用電 ＝（本次電表讀數 − 上次電表讀數） ÷ 兩次紀錄間隔小時數。
@@ -214,7 +252,7 @@
             <li>也支援「時間, 讀數」用逗號分隔</li>
           </ul>
         </div>
-        <button class="primary" id="batch-import-btn">匯入以上資料</button>
+        <button class="primary" id="batch-import-btn">匯入以上資料到雲端</button>
       </div>
     </div>
   </div>
@@ -249,18 +287,17 @@
       </div>
     </div>
 
-    <button class="primary" id="billing-save-btn">儲存本期設定</button>
+    <button class="primary" id="billing-save-btn">儲存本期設定到雲端</button>
 
     <div id="billing-summary" class="small-text" style="margin-top:8px;"></div>
   </div>
 
   <script>
-    // --- 常數與全域變數 ---
+    // ======= 已替你塞好這兩個 =======
+    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyr-CYGXoSqgq8tbXoBXjPbZTU1GpH1gWXJ1TTS9Le5SCIcyDikY3tSBymi6Lo1JZyc/exec";
+    const OWNER_TOKEN = "860318";
+    // ==============================
 
-    const STORAGE_KEY_ENTRIES = "electric_meter_entries_v1";      // 沿用舊 key
-    const STORAGE_KEY_BILLING = "electric_meter_billing_v1";
-
-    // 台電 113 年住宅用電累進電價（兩個月累算，級距乘 2）
     const RATE_TABLE_2M = {
       summer: [
         { limit: 240,  price: 1.68 },
@@ -283,7 +320,6 @@
     let entries = [];
     let billingConfig = null;
 
-    // DOM 參照
     const readingInput = document.getElementById("reading");
     const timeInput = document.getElementById("record-time");
     const useNowCheckbox = document.getElementById("use-now");
@@ -302,8 +338,6 @@
     const billingSaveBtn = document.getElementById("billing-save-btn");
     const billingSummaryDiv = document.getElementById("billing-summary");
 
-    // --- 工具函式 ---
-
     function round(value, decimals) {
       const factor = Math.pow(10, decimals);
       return Math.round(value * factor) / factor;
@@ -320,19 +354,13 @@
       return `${y}-${m}-${day} ${hh}:${mm}`;
     }
 
-    // 嘗試從使用者輸入的日期時間字串解析出 Date 物件
     function parseUserDateTime(timePart) {
       let s = timePart.trim();
       if (!s) return null;
-
-      // 把 / 換成 -，方便統一處理
       s = s.replace(/\//g, "-");
-
-      // 格式：YYYY-M-D HH:MM[:SS]
       const m = s.match(
         /^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
       );
-
       if (m) {
         let year  = m[1];
         let month = m[2].padStart(2, "0");
@@ -340,20 +368,16 @@
         let hh    = (m[4] ?? "0").padStart(2, "0");
         let mm    = (m[5] ?? "0").padStart(2, "0");
         let ss    = (m[6] ?? "0").padStart(2, "0");
-
         const iso = `${year}-${month}-${day}T${hh}:${mm}:${ss}`;
         const d = new Date(iso);
         if (!isNaN(d.getTime())) return d;
       }
-
-      // 若不是上述格式，就直接丟給 new Date 試試看（補個 T）
       if (!s.includes("T") && s.includes(" ")) {
         s = s.replace(" ", "T");
       }
       const d2 = new Date(s);
       if (!isNaN(d2.getTime())) return d2;
-
-      return null; // 解析失敗
+      return null;
     }
 
     function estimateBillFor2M(kwhUsed, isSummer) {
@@ -386,77 +410,58 @@
       });
     }
 
-    // --- 資料存取 ---
+    // ---- API ----
 
-    function loadEntries() {
-      const raw = localStorage.getItem(STORAGE_KEY_ENTRIES);
-      if (!raw) {
-        entries = [];
-        return;
+    async function apiGetAll() {
+      const url = `${SCRIPT_URL}?action=all&token=${encodeURIComponent(OWNER_TOKEN)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!data.ok) {
+        throw new Error(data.error || "取得資料失敗");
       }
-      try {
-        const parsed = JSON.parse(raw);
-        entries = Array.isArray(parsed) ? parsed : [];
-      } catch (e) {
-        console.error("讀取 entries 失敗：", e);
-        entries = [];
-      }
+      entries = data.entries || [];
+      billingConfig = data.billing || null;
+      applyBillingConfigToForm();
+      renderTable();
     }
 
-    function saveEntries() {
-      localStorage.setItem(STORAGE_KEY_ENTRIES, JSON.stringify(entries));
+    async function apiPost(payload) {
+      const res = await fetch(SCRIPT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: OWNER_TOKEN, ...payload })
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        throw new Error(data.error || "操作失敗");
+      }
+      entries = data.entries || [];
+      billingConfig = data.billing || null;
+      applyBillingConfigToForm();
+      renderTable();
     }
 
-    function loadBillingConfig() {
-      const raw = localStorage.getItem(STORAGE_KEY_BILLING);
-      if (!raw) {
-        billingConfig = null;
-        return;
-      }
-      try {
-        const obj = JSON.parse(raw);
-        if (obj && typeof obj === "object") {
-          billingConfig = {
-            periodStartDate: obj.periodStartDate || "",
-            periodStartReading: typeof obj.periodStartReading === "number" ? obj.periodStartReading : null,
-            seasonMode: obj.seasonMode || "auto"
-          };
-        } else {
-          billingConfig = null;
-        }
-      } catch (e) {
-        console.error("讀取 billingConfig 失敗：", e);
-        billingConfig = null;
-      }
-    }
-
-    function saveBillingConfig() {
-      if (!billingConfig) return;
-      localStorage.setItem(STORAGE_KEY_BILLING, JSON.stringify(billingConfig));
-    }
+    // ---- billing ----
 
     function applyBillingConfigToForm() {
       if (!billingConfig) {
         billingSummaryDiv.textContent = "尚未設定本期起始抄表資訊。";
+        billingStartDateInput.value = "";
+        billingStartReadingInput.value = "";
+        billingSeasonSelect.value = "auto";
         return;
       }
-      if (billingConfig.periodStartDate) {
-        billingStartDateInput.value = billingConfig.periodStartDate;
-      }
+      billingStartDateInput.value = billingConfig.periodStartDate || "";
       if (typeof billingConfig.periodStartReading === "number") {
         billingStartReadingInput.value = billingConfig.periodStartReading;
       }
-      if (billingConfig.seasonMode) {
-        billingSeasonSelect.value = billingConfig.seasonMode;
-      }
+      billingSeasonSelect.value = billingConfig.seasonMode || "auto";
     }
 
     function getSeasonMode(config) {
       if (!config) return null;
       const mode = config.seasonMode || "auto";
       if (mode === "summer" || mode === "nonsummer") return mode;
-
-      // auto：依起始日期判斷
       if (!config.periodStartDate) return "nonsummer";
       const d = new Date(config.periodStartDate + "T00:00");
       if (isNaN(d.getTime())) return "nonsummer";
@@ -464,7 +469,56 @@
       return (month >= 6 && month <= 9) ? "summer" : "nonsummer";
     }
 
-    // --- UI 渲染 ---
+    function updateBillingSummary() {
+      if (!billingSummaryDiv) return;
+
+      if (!billingConfig || !billingConfig.periodStartDate || typeof billingConfig.periodStartReading !== "number") {
+        billingSummaryDiv.textContent = "尚未設定本期起始抄表資訊。請輸入上期帳單的起始抄表日期與度數後按「儲存本期設定到雲端」。";
+        return;
+      }
+
+      if (!entries || entries.length === 0) {
+        billingSummaryDiv.textContent = "目前沒有任何用電紀錄，因此無法估算本期電費。";
+        return;
+      }
+
+      const latest = getLatestEntry();
+      if (!最新) {
+        billingSummaryDiv.textContent = "目前沒有任何用電紀錄，因此無法估算本期電費。";
+        return;
+      }
+
+      const used = latest.reading - billingConfig.periodStartReading;
+      if (used <= 0) {
+        billingSummaryDiv.innerHTML =
+          `本期起始抄表日：${billingConfig.periodStartDate}，起始度數：${billingConfig.periodStartReading} 度。<br>` +
+          `最新紀錄時間：${formatDateTime(latest.timestamp)}，最新讀數：${latest.reading} 度。<br>` +
+          `<span class="warning">目前讀數尚未超過起始讀數，無法估算本期電費（或起始度數設定有誤）。</span>`;
+        return;
+      }
+
+      const seasonMode = getSeasonMode(billingConfig);
+      const isSummer = seasonMode === "summer";
+      const bill = estimateBillFor2M(used, isSummer);
+
+      let seasonLabel = "";
+      if (billingConfig.seasonMode === "summer") {
+        seasonLabel = "（強制使用夏月電價）";
+      } else if (billingConfig.seasonMode === "nonsummer") {
+        seasonLabel = "（強制使用非夏月電價）";
+      } else {
+        seasonLabel = isSummer ? "（自動判斷為夏月電價）" : "（自動判斷為非夏月電價）";
+      }
+
+      billingSummaryDiv.innerHTML =
+        `本期起始抄表日：${billingConfig.periodStartDate}，起始度數：${billingConfig.periodStartReading} 度。<br>` +
+        `最新紀錄時間：${formatDateTime(latest.timestamp)}，最新讀數：${latest.read數} 度。<br>` +
+        `本期累積用電：約 <b>${round(used, 2)} 度</b><br>` +
+        `估算本期電費：約 <b>${round(bill, 0)} 元</b> <span class="badge">${isSummer ? "夏月" : "非夏月"}</span> ${seasonLabel}<br>` +
+        `<span class="small-text">※ 此為簡化估算，只依照台電住宅累進電價計算流動電費，未含其它雜項。</span>`;
+    }
+
+    // ---- UI 渲染 ----
 
     function renderSummary(sortedEntries) {
       if (sortedEntries.length === 0) {
@@ -521,7 +575,6 @@
       renderSummary(sorted);
 
       const table = document.createElement("table");
-
       const thead = document.createElement("thead");
       const headerRow = document.createElement("tr");
       const headers = [
@@ -545,22 +598,18 @@
       sorted.forEach((entry, index) => {
         const tr = document.createElement("tr");
 
-        // 序號
         const tdIndex = document.createElement("td");
         tdIndex.textContent = index + 1;
         tr.appendChild(tdIndex);
 
-        // 時間
         const tdTime = document.createElement("td");
         tdTime.textContent = formatDateTime(entry.timestamp);
         tr.appendChild(tdTime);
 
-        // 電表讀數
         const tdReading = document.createElement("td");
         tdReading.textContent = entry.reading;
         tr.appendChild(tdReading);
 
-        // 差值 / 時間 / 平均
         const tdDiff = document.createElement("td");
         const tdHours = document.createElement("td");
         const tdAvg = document.createElement("td");
@@ -590,14 +639,16 @@
         tr.appendChild(tdHours);
         tr.appendChild(tdAvg);
 
-        // 操作（刪除）
         const tdActions = document.createElement("td");
         const delBtn = document.createElement("button");
         delBtn.textContent = "刪除";
         delBtn.className = "secondary";
-        delBtn.addEventListener("click", () => {
-          if (confirm("確定要刪除此筆紀錄嗎？")) {
-            deleteEntry(entry.id);
+        delBtn.addEventListener("click", async () => {
+          if (!confirm("確定要刪除此筆紀錄嗎？")) return;
+          try {
+            await apiPost({ action: "deleteEntry", id: entry.id });
+          } catch (err) {
+            alert("刪除失敗：" + err.message);
           }
         });
         tdActions.appendChild(delBtn);
@@ -608,65 +659,15 @@
 
       table.appendChild(thead);
       table.appendChild(tbody);
-
       tableContainer.innerHTML = "";
       tableContainer.appendChild(table);
 
       updateBillingSummary();
     }
 
-    function updateBillingSummary() {
-      if (!billingSummaryDiv) return;
+    // ---- 動作 ----
 
-      if (!billingConfig || !billingConfig.periodStartDate || typeof billingConfig.periodStartReading !== "number") {
-        billingSummaryDiv.textContent = "尚未設定本期起始抄表資訊。請輸入上期帳單的起始抄表日期與度數後按「儲存本期設定」。";
-        return;
-      }
-
-      if (!entries || entries.length === 0) {
-        billingSummaryDiv.textContent = "目前沒有任何用電紀錄，因此無法估算本期電費。";
-        return;
-      }
-
-      const latest = getLatestEntry();
-      if (!latest) {
-        billingSummaryDiv.textContent = "目前沒有任何用電紀錄，因此無法估算本期電費。";
-        return;
-      }
-
-      const used = latest.reading - billingConfig.periodStartReading;
-      if (used <= 0) {
-        billingSummaryDiv.innerHTML =
-          `本期起始抄表日：${billingConfig.periodStartDate}，起始度數：${billingConfig.periodStartReading} 度。<br>` +
-          `最新紀錄時間：${formatDateTime(latest.timestamp)}，最新讀數：${latest.reading} 度。<br>` +
-          `<span class="warning">目前讀數尚未超過起始讀數，無法估算本期電費（或起始度數設定有誤）。</span>`;
-        return;
-      }
-
-      const seasonMode = getSeasonMode(billingConfig);
-      const isSummer = seasonMode === "summer";
-      const bill = estimateBillFor2M(used, isSummer);
-
-      let seasonLabel = "";
-      if (billingConfig.seasonMode === "summer") {
-        seasonLabel = "（強制使用夏月電價）";
-      } else if (billingConfig.seasonMode === "nonsummer") {
-        seasonLabel = "（強制使用非夏月電價）";
-      } else {
-        seasonLabel = isSummer ? "（自動判斷為夏月電價）" : "（自動判斷為非夏月電價）";
-      }
-
-      billingSummaryDiv.innerHTML =
-        `本期起始抄表日：${billingConfig.periodStartDate}，起始度數：${billingConfig.periodStartReading} 度。<br>` +
-        `最新紀錄時間：${formatDateTime(latest.timestamp)}，最新讀數：${latest.reading} 度。<br>` +
-        `本期累積用電：約 <b>${round(used, 2)} 度</b><br>` +
-        `估算本期電費：約 <b>${round(bill, 0)} 元</b> <span class="badge">${isSummer ? "夏月" : "非夏月"}</span> ${seasonLabel}<br>` +
-        `<span class="small-text">※ 此為簡化估算，只依照台電住宅累進電價計算流動電費，未含其它雜項。</span>`;
-    }
-
-    // --- 操作邏輯 ---
-
-    function addEntry() {
+    async function addEntry() {
       const readingValue = parseFloat(readingInput.value);
       if (isNaN(readingValue)) {
         alert("請輸入正確的電表讀數（數字）。");
@@ -674,7 +675,6 @@
       }
 
       let recordDate;
-
       if (useNowCheckbox.checked) {
         recordDate = new Date();
       } else {
@@ -695,31 +695,24 @@
         timestamp: recordDate.toISOString()
       };
 
-      entries.push(entry);
-      saveEntries();
-      renderTable();
-
-      readingInput.value = "";
+      try {
+        await apiPost({ action: "addEntry", entry });
+        readingInput.value = "";
+      } catch (err) {
+        alert("新增失敗：" + err.message);
+      }
     }
 
-    function deleteEntry(id) {
-      entries = entries.filter(e => e.id !== id);
-      saveEntries();
-      renderTable();
-    }
-
-    function clearAll() {
-      if (!confirm("確定要清除全部紀錄嗎？此動作無法復原。")) return;
-      entries = [];
-      saveEntries();
-      renderTable();
+    async function clearAll() {
+      if (!confirm("確定要清除雲端的全部紀錄嗎？此動作無法復原。")) return;
+      try {
+        await apiPost({ action: "clearAllEntries" });
+      } catch (err) {
+        alert("清除失敗：" + err.message);
+      }
     }
 
     function exportData() {
-      if (!entries || entries.length === 0) {
-        alert("目前沒有任何紀錄可以匯出。");
-        return;
-      }
       const data = {
         entries,
         billingConfig
@@ -733,12 +726,7 @@
       }
     }
 
-    function updateTimeInputState() {
-      timeInput.disabled = useNowCheckbox.checked;
-    }
-
-    // 批次匯入：支援「時間  讀數」與「時間, 讀數」
-    function importBatch() {
+    async function importBatch() {
       const text = batchInput.value.trim();
       if (!text) {
         alert("請先在文字框輸入要匯入的資料。");
@@ -746,10 +734,10 @@
       }
 
       const lines = text.split(/\r?\n/);
-      let success = 0;
-      let fail = 0;
       const newEntries = [];
       const nowBase = Date.now();
+      let success = 0;
+      let fail = 0;
 
       lines.forEach((line, idx) => {
         const trimmed = line.trim();
@@ -758,28 +746,24 @@
         let timePart = "";
         let readingPart = "";
 
-        // 1️⃣ 若含逗號，就視為「時間, 讀數」
         if (trimmed.includes(",")) {
           const parts = trimmed.split(",");
           if (parts.length < 2) { fail++; return; }
           timePart = parts[0].trim();
           readingPart = parts[1].trim();
         } else {
-          // 2️⃣ 其他情況：用空白 / Tab 拆開，最後一個當讀數，其餘全部當時間
           const parts = trimmed.split(/\s+/);
           if (parts.length < 2) { fail++; return; }
           readingPart = parts[parts.length - 1];
           timePart = parts.slice(0, -1).join(" ");
         }
 
-        // 解析讀數
         const reading = parseFloat(readingPart.replace(/,/g, ""));
         if (isNaN(reading)) {
           fail++;
           return;
         }
 
-        // 解析時間（支援：2025/11/4 17:05:00 這種格式）
         const d = parseUserDateTime(timePart);
         if (!d) {
           fail++;
@@ -794,16 +778,20 @@
         success++;
       });
 
-      if (newEntries.length > 0) {
-        entries = entries.concat(newEntries);
-        saveEntries();
-        renderTable();
+      if (newEntries.length === 0) {
+        alert(`沒有成功解析任何資料，失敗 ${fail} 筆。`);
+        return;
       }
 
-      alert(`匯入完成：成功 ${success} 筆，失敗 ${fail} 筆。`);
+      try {
+        await apiPost({ action: "batchAddEntries", entries: newEntries });
+        alert(`匯入完成：成功 ${success} 筆，失敗 ${fail} 筆。`);
+      } catch (err) {
+        alert("匯入失敗：" + err.message);
+      }
     }
 
-    function saveBillingFromForm() {
+    async function saveBillingFromForm() {
       const dateVal = billingStartDateInput.value;
       const readingVal = parseFloat(billingStartReadingInput.value);
       const seasonMode = billingSeasonSelect.value;
@@ -817,32 +805,39 @@
         return;
       }
 
-      billingConfig = {
+      const billing = {
         periodStartDate: dateVal,
         periodStartReading: readingVal,
         seasonMode: seasonMode || "auto"
       };
-      saveBillingConfig();
-      updateBillingSummary();
-      alert("本期設定已儲存。");
+
+      try {
+        await apiPost({ action: "setBilling", billing });
+        alert("本期設定已儲存到雲端。");
+      } catch (err) {
+        alert("儲存失敗：" + err.message);
+      }
     }
 
-    // --- 初始化 ---
+    function updateTimeInputState() {
+      timeInput.disabled = useNowCheckbox.checked;
+    }
 
-    document.addEventListener("DOMContentLoaded", () => {
-      loadEntries();
-      loadBillingConfig();
-      applyBillingConfigToForm();
-      renderTable();
+    document.addEventListener("DOMContentLoaded", async () => {
       updateTimeInputState();
 
       addBtn.addEventListener("click", addEntry);
       clearBtn.addEventListener("click", clearAll);
       exportBtn.addEventListener("click", exportData);
       useNowCheckbox.addEventListener("change", updateTimeInputState);
-
       batchImportBtn.addEventListener("click", importBatch);
       billingSaveBtn.addEventListener("click", saveBillingFromForm);
+
+      try {
+        await apiGetAll();
+      } catch (err) {
+        alert("從雲端載入資料失敗：" + err.message);
+      }
     });
   </script>
 </body>
