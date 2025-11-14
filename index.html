@@ -245,7 +245,7 @@
     <button class="primary" id="add-btn">新增紀錄</button>
   </div>
 
-  <!-- 紀錄列表 + 總體摘要（只顯示最近 10 筆，最新在最上） -->
+  <!-- 紀錄列表（最近 10 筆） -->
   <div class="card">
     <div class="row" style="justify-content:space-between;align-items:flex-start;">
       <div>
@@ -275,12 +275,12 @@
       <div>
         <label for="trend-mode">顯示模式</label>
         <select id="trend-mode">
-          <option value="hourly">每小時平均用電（度/小時）</option>
+          <option value="hourly">每小時用電量（以整點統計）</option>
           <option value="daily">每日用電量（度/日）</option>
         </select>
         <div class="small-text">
-          每小時：以兩筆紀錄間的期間，計算平均每小時用電。<br>
-          每日：以「後一筆紀錄的日期」歸戶該段用電量（跨日區間會算在後一天）。
+          每小時：把兩筆紀錄之間的用電，平均分配到期間涵蓋的整點小時格子。<br>
+          每日：以「後一筆紀錄的日期」歸戶該段用電量。
         </div>
       </div>
     </div>
@@ -377,6 +377,7 @@
     const OWNER_TOKEN = "860318";
     // ==================================
 
+    // 台電兩個月累進電價（住宅）
     const RATE_TABLE_2M = {
       summer: [
         { limit: 240,  price: 1.68 },
@@ -453,6 +454,24 @@
       return `${y}-${m}-${day}`;
     }
 
+    // 把時間往下取整到該小時整點
+    function floorToHour(dateOrIso) {
+      const d = (dateOrIso instanceof Date) ? new Date(dateOrIso) : new Date(dateOrIso);
+      if (isNaN(d.getTime())) return null;
+      d.setMinutes(0, 0, 0);
+      return d;
+    }
+
+    // 折線圖用的整點標籤
+    function formatHourLabel(isoString) {
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return isoString;
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      const hh = String(d.getHours()).padStart(2, "0");
+      return `${m}/${day} ${hh}:00`;
+    }
+
     function parseUserDateTime(timePart) {
       let s = timePart.trim();
       if (!s) return null;
@@ -486,7 +505,7 @@
       });
     }
 
-    // === 電費計算：回傳總額 + 每一級明細 ===
+    // 電費級距：回傳總額 + 每一級明細
     function computeBillBreakdown(kwhUsed, isSummer) {
       const table = isSummer ? RATE_TABLE_2M.summer : RATE_TABLE_2M.nonsummer;
       let remaining = kwhUsed;
@@ -678,7 +697,7 @@
       summaryDiv.innerHTML = html;
     }
 
-    // ---- 表格渲染（主列表）：只顯示最近 10 筆，最新在上 ----
+    // ---- 主表：最近 10 筆，最新在上 ----
     function renderTable() {
       if (!entries || entries.length === 0) {
         tableContainer.innerHTML = "<p>目前尚無紀錄。</p>";
@@ -692,12 +711,10 @@
         return new Date(a.timestamp) - new Date(b.timestamp);
       });
 
-      // Summary 使用全部
       renderSummary(sortedAsc);
 
-      // 表格只顯示最近 10 筆（時序上最後 10 筆），再反轉成最新在上
       const last10Asc = sortedAsc.slice(-10);
-      const tableData = last10Asc.slice().reverse();
+      const tableData = last10Asc.slice().reverse(); // 最新在上
 
       const table = document.createElement("table");
       const thead = document.createElement("thead");
@@ -792,7 +809,7 @@
       updateTrendChart();
     }
 
-    // ---- 管理所有紀錄：渲染表格（全部 or 按月篩選，最新在上） ----
+    // ---- 管理所有紀錄：全部/指定月份，最新在上 ----
     function renderManageTable() {
       if (!manageTableContainer) return;
 
@@ -882,7 +899,6 @@
           if (!confirm("確定要刪除此筆紀錄嗎？")) return;
           try {
             await apiPost({ action: "deleteEntry", id: entry.id });
-            // apiPost 裡會更新 entries、主列表，這裡補 render 管理表
             renderManageTable();
           } catch (err) {
             alert("刪除失敗：" + err.message);
@@ -909,7 +925,7 @@
       manageModal.style.display = "none";
     }
 
-    // ---- 用電趨勢圖 ----
+    // ---- 用電趨勢圖：每小時（整點 bucket）／每日 ----
     function updateTrendChart() {
       const ctx = document.getElementById("trend-chart");
       if (!ctx || !entries || entries.length < 2) {
@@ -929,16 +945,54 @@
       let data = [];
 
       if (mode === "hourly") {
+        // 以「整點小時」為單位，把每段用電量平均分配到各小時 bucket
+        const buckets = {}; // key: hourISO, value: 該小時用電量
+
         for (let i = 1; i < sortedAsc.length; i++) {
           const prev = sortedAsc[i - 1];
           const cur = sortedAsc[i];
+
+          const t0 = new Date(prev.timestamp);
+          const t1 = new Date(cur.timestamp);
           const diffReading = cur.reading - prev.reading;
-          const diffHours = (new Date(cur.timestamp) - new Date(prev.timestamp)) / (1000 * 60 * 60);
-          if (diffHours > 0 && diffReading >= 0) {
-            labels.push(formatDateTime(cur.timestamp));
-            data.push(diffReading / diffHours);
+          const diffHours = (t1 - t0) / (1000 * 60 * 60);
+
+          if (diffHours <= 0 || diffReading < 0) continue;
+
+          const rate = diffReading / diffHours; // 度/小時
+
+          let h = floorToHour(t0);
+          if (!h) continue;
+
+          // 逐小時切割 [t0, t1)
+          while (h < t1) {
+            const nextH = new Date(h.getTime() + 60 * 60 * 1000); // 下一個整點
+            const overlapStart = (t0 > h) ? t0 : h;
+            const overlapEnd = (t1 < nextH) ? t1 : nextH;
+            const overlapMs = overlapEnd - overlapStart;
+
+            if (overlapMs > 0) {
+              const overlapHours = overlapMs / (1000 * 60 * 60);
+              const key = h.toISOString();
+              buckets[key] = (buckets[key] || 0) + rate * overlapHours;
+            }
+
+            h = nextH;
           }
         }
+
+        const keys = Object.keys(buckets).sort();
+        if (keys.length === 0) {
+          if (trendChart) {
+            trendChart.destroy();
+            trendChart = null;
+          }
+          return;
+        }
+
+        labels = keys.map(k => formatHourLabel(k));
+        data = keys.map(k => buckets[k]);
+
       } else if (mode === "daily") {
         const dailyMap = {};
         for (let i = 1; i < sortedAsc.length; i++) {
@@ -969,7 +1023,9 @@
           labels,
           datasets: [
             {
-              label: mode === "hourly" ? "每小時平均用電（度/小時）" : "每日用電量（度/日）",
+              label: mode === "hourly"
+                ? "每小時用電量（度，以整點統計）"
+                : "每日用電量（度/日）",
               data,
               fill: false
             }
