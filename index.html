@@ -180,6 +180,34 @@
       box-shadow: 0 4px 12px rgba(0,0,0,0.2);
     }
 
+    /* 底部小通知燈（toast） */
+    .toast {
+      position: fixed;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%) translateY(8px);
+      background: rgba(31, 41, 55, 0.96); /* 深灰近黑 */
+      color: #f9fafb;
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+      z-index: 1100;
+      max-width: 90%;
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
     @media (max-width: 600px) {
       body {
         margin: 10px;
@@ -209,6 +237,11 @@
 
       h1 {
         font-size: 1.2rem;
+      }
+
+      .toast {
+        font-size: 0.8rem;
+        padding: 7px 12px;
       }
     }
   </style>
@@ -275,12 +308,12 @@
       <div>
         <label for="trend-mode">顯示模式</label>
         <select id="trend-mode">
+          <option value="daily" selected>每日用電量（度/日）</option>
           <option value="hourly">每小時用電量（以整點統計）</option>
-          <option value="daily">每日用電量（度/日）</option>
         </select>
         <div class="small-text">
-          每小時：把兩筆紀錄之間的用電，平均分配到期間涵蓋的整點小時格子。<br>
-          每日：以「後一筆紀錄的日期」歸戶該段用電量。
+          每日：以「後一筆紀錄的日期」歸戶該段用電量。<br>
+          每小時：把兩筆紀錄間的用電，平均分配到期間涵蓋的整點小時格子。
         </div>
       </div>
     </div>
@@ -371,6 +404,9 @@
     </div>
   </div>
 
+  <!-- 底部通知燈 -->
+  <div id="toast" class="toast"></div>
+
   <script>
     // ======= 你的 Web App 設定 =======
     const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyr-CYGXoSqgq8tbXoBXjPbZTU1GpH1gWXJ1TTS9Le5SCIcyDikY3tSBymi6Lo1JZyc/exec";
@@ -400,6 +436,7 @@
     let entries = [];
     let billingConfig = null;
     let trendChart = null;
+    let toastTimer = null;
 
     const readingInput = document.getElementById("reading");
     const timeInput = document.getElementById("record-time");
@@ -537,6 +574,20 @@
 
     function estimateBillFor2M(kwhUsed, isSummer) {
       return computeBillBreakdown(kwhUsed, isSummer).totalCost;
+    }
+
+    // ---- Toast 通知 ----
+    function showNotification(message) {
+      const toast = document.getElementById("toast");
+      if (!toast) return;
+      toast.textContent = message;
+      toast.classList.add("show");
+      if (toastTimer) {
+        clearTimeout(toastTimer);
+      }
+      toastTimer = setTimeout(() => {
+        toast.classList.remove("show");
+      }, 2500);
     }
 
     // ---- API ----
@@ -790,6 +841,7 @@
           if (!confirm("確定要刪除此筆紀錄嗎？")) return;
           try {
             await apiPost({ action: "deleteEntry", id: entry.id });
+            showNotification("紀錄已刪除");
           } catch (err) {
             alert("刪除失敗：" + err.message);
           }
@@ -899,6 +951,7 @@
           if (!confirm("確定要刪除此筆紀錄嗎？")) return;
           try {
             await apiPost({ action: "deleteEntry", id: entry.id });
+            showNotification("紀錄已刪除");
             renderManageTable();
           } catch (err) {
             alert("刪除失敗：" + err.message);
@@ -936,7 +989,7 @@
         return;
       }
 
-      const mode = trendModeSelect.value || "hourly";
+      const mode = trendModeSelect.value || "daily";
       const sortedAsc = [...entries].sort((a, b) => {
         return new Date(a.timestamp) - new Date(b.timestamp);
       });
@@ -1078,6 +1131,7 @@
       try {
         await apiPost({ action: "addEntry", entry });
         readingInput.value = "";
+        showNotification("紀錄已儲存");
       } catch (err) {
         alert("新增失敗：" + err.message);
       }
@@ -1087,6 +1141,7 @@
       if (!confirm("確定要清除雲端的全部紀錄嗎？此動作無法復原。")) return;
       try {
         await apiPost({ action: "clearAllEntries" });
+        showNotification("已清除全部紀錄");
       } catch (err) {
         alert("清除失敗：" + err.message);
       }
@@ -1165,7 +1220,7 @@
 
       try {
         await apiPost({ action: "batchAddEntries", entries: newEntries });
-        alert(`匯入完成：成功 ${success} 筆，失敗 ${fail} 筆。`);
+        showNotification(`批次匯入完成：成功 ${success} 筆，失敗 ${fail} 筆`);
       } catch (err) {
         alert("匯入失敗：" + err.message);
       }
@@ -1193,7 +1248,7 @@
 
       try {
         await apiPost({ action: "setBilling", billing });
-        alert("本期設定已儲存到雲端。");
+        showNotification("本期設定已儲存");
       } catch (err) {
         alert("儲存失敗：" + err.message);
       }
